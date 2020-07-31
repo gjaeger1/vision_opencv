@@ -29,7 +29,7 @@ if(NOT ANDROID)
       if (Boost_VERSION LESS 106700)
         set(_Boost_PYTHON3_HEADERS "boost/python.hpp")
       endif()
-      find_package(Boost COMPONENTS python3 REQUIRED)
+      find_package(Boost COMPONENTS python38 REQUIRED)
     endif()
   endif()
 else()
@@ -37,7 +37,7 @@ else()
 endif()
 
 find_package(sensor_msgs REQUIRED)
-find_package(OpenCV 3 REQUIRED
+find_package(OpenCV 4 REQUIRED
   COMPONENTS
     opencv_core
     opencv_imgproc

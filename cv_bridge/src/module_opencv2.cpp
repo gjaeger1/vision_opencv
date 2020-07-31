@@ -105,28 +105,31 @@ public:
   NumpyAllocator() {}
   ~NumpyAllocator() {}
 
-  void allocate(
-    int dims, const int * sizes, int type, int * & refcount,
-    uchar * & datastart, uchar * & data, size_t * step);
+  virtual UMatData* allocate(int dims, const int * sizes, int type, void* data, std::size_t* step, AccessFlag accessflags, UMatUsageFlags usageFlags) const override;
+  virtual bool allocate(UMatData* data, AccessFlag accessflags, UMatUsageFlags usageFlags) const override{};
 
-  void deallocate(int * refcount, uchar * datastart, uchar * data);
+  //virtual void copy(UMatData* srcData, UMatData* dstData, int dims, const std::size_t* sz, , const std::size_t* srcofs, const std::size_t* srcstep, const std::size_t* dstofs, const std::size_t* dststep, bool sync) const override;
+
+  virtual void deallocate(UMatData* data) const override;
 };
 
-void NumpyAllocator::allocate(
-  int dims, const int * sizes, int type, int * & refcount,
-  uchar * & datastart, uchar * & data, size_t * step)
+UMatData* NumpyAllocator::allocate(int dims, const int * sizes, int type, void* data, std::size_t* step, AccessFlag accessflags, UMatUsageFlags usageFlags) const
 {
+  UMatData* umatdata = new UMatData(this);
+
   int depth = CV_MAT_DEPTH(type);
   int cn = CV_MAT_CN(type);
-  const int f = (static_cast<int>)(sizeof( size_t ) / 8);
+  const int f = static_cast<int>(sizeof( size_t ) / 8);
   int typenum = depth == CV_8U ? NPY_UBYTE : depth == CV_8S ? NPY_BYTE :
     depth == CV_16U ? NPY_USHORT : depth == CV_16S ? NPY_SHORT :
     depth == CV_32S ? NPY_INT : depth == CV_32F ? NPY_FLOAT :
     depth == CV_64F ? NPY_DOUBLE : f * NPY_ULONGLONG + (f ^ 1) * NPY_UINT;
   int i;
   npy_intp _sizes[CV_MAX_DIM + 1];
+  int overallsize = 1;
   for (i = 0; i < dims; i++) {
     _sizes[i] = sizes[i];
+    overallsize *= sizes[i];
   }
   if (cn > 1) {
     /*if( _sizes[dims-1] == 1 )
@@ -139,20 +142,24 @@ void NumpyAllocator::allocate(
     CV_Error_(CV_StsError,
       ("The numpy array of typenum=%d, ndims=%d can not be created", typenum, dims));
   }
-  refcount = refcountFromPyObject(o);
+  umatdata->refcount = *(refcountFromPyObject(o));
   npy_intp * _strides = PyArray_STRIDES(reinterpret_cast<PyArrayObject *>(o));
   for (i = 0; i < dims - (cn > 1); i++) {
     step[i] = (size_t)_strides[i];
   }
-  datastart = data = reinterpret_cast<uchar *>(PyArray_DATA(reinterpret_cast<PyArrayObject *>(o)));
+  umatdata->data = umatdata->origdata = reinterpret_cast<uchar *>(PyArray_DATA(reinterpret_cast<PyArrayObject *>(o)));
+  umatdata->size = overallsize;
+  data = static_cast<void*>(umatdata->data);
+
+  return umatdata;
 }
 
-void NumpyAllocator::deallocate(int * refcount, uchar * datastart, uchar * data)
+void NumpyAllocator::deallocate(UMatData* data) const
 {
-  if (!refcount) {
+  if (!data->refcount) {
     return;
   }
-  PyObject * o = pyObjectFromRefcount(refcount);
+  PyObject * o = pyObjectFromRefcount(&(data->refcount));
   Py_INCREF(o);
   Py_DECREF(o);
 }
@@ -178,7 +185,7 @@ int convert_to_CvMat2(const PyObject * o, cv::Mat & m)
   }
 
   // NPY_LONG (64 bit) is converted to CV_32S (32 bit)
-  int typenum = PyArray_TYPE(reinterpret_cast<PyArrayObject *>(o));
+  int typenum = PyArray_TYPE(reinterpret_cast<PyArrayObject *>(const_cast<PyObject*>(o)));
   int type = typenum == NPY_UBYTE ? CV_8U : typenum == NPY_BYTE ? CV_8S :
     typenum == NPY_USHORT ? CV_16U : typenum == NPY_SHORT ? CV_16S :
     typenum == NPY_INT || typenum == NPY_LONG ? CV_32S :
@@ -190,7 +197,7 @@ int convert_to_CvMat2(const PyObject * o, cv::Mat & m)
     return false;
   }
 
-  int ndims = PyArray_NDIM(reinterpret_cast<PyArrayObject *>(o));
+  int ndims = PyArray_NDIM(reinterpret_cast<PyArrayObject *>(const_cast<PyObject*>(o)));
   if (ndims >= CV_MAX_DIM) {
     failmsg("dimensionality (=%d) is too high", ndims);
     return false;
@@ -198,12 +205,12 @@ int convert_to_CvMat2(const PyObject * o, cv::Mat & m)
 
   int size[CV_MAX_DIM + 1];
   size_t step[CV_MAX_DIM + 1], elemsize = CV_ELEM_SIZE1(type);
-  const npy_intp * _sizes = PyArray_DIMS(reinterpret_cast<PyArrayObject *>(o));
-  const npy_intp * _strides = PyArray_STRIDES(reinterpret_cast<PyArrayObject *>(o));
+  const npy_intp * _sizes = PyArray_DIMS(reinterpret_cast<PyArrayObject *>(const_cast<PyObject*>(o)));
+  const npy_intp * _strides = PyArray_STRIDES(reinterpret_cast<PyArrayObject *>(const_cast<PyObject*>(o)));
   bool transposed = false;
 
   for (int i = 0; i < ndims; i++) {
-    size[i] = (static_cast<int>)_sizes[i];
+    size[i] = static_cast<int>(_sizes[i]);
     step[i] = (size_t)_strides[i];
   }
 
@@ -229,10 +236,10 @@ int convert_to_CvMat2(const PyObject * o, cv::Mat & m)
     return false;
   }
 
-  m = cv::Mat(ndims, size, type, PyArray_DATA(reinterpret_cast<PyArrayObject *>(o)), step);
+  m = cv::Mat(ndims, size, type, PyArray_DATA(reinterpret_cast<PyArrayObject *>(const_cast<PyObject*>(o))), step);
 
   if (m.data) {
-    m.refcount = refcountFromPyObject(o);
+    m.u->refcount = *refcountFromPyObject(o);
     m.addref();     // protect the original numpy array from deallocation
     // (since Mat destructor will decrement the reference counter)
   }
@@ -253,11 +260,11 @@ PyObject * pyopencv_from(const Mat & m)
     Py_RETURN_NONE;
   }
   Mat temp, * p = const_cast<Mat *>(&m);
-  if (!p->refcount || p->allocator != &g_numpyAllocator) {
+  if (!p->u->refcount || p->allocator != &g_numpyAllocator) {
     temp.allocator = &g_numpyAllocator;
     ERRWRAP2(m.copyTo(temp));
     p = &temp;
   }
   p->addref();
-  return pyObjectFromRefcount(p->refcount);
+  return pyObjectFromRefcount(&(p->u->refcount));
 }
